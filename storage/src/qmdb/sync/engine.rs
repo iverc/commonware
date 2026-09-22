@@ -458,6 +458,14 @@ where
         new_target: Target<DB::Family, DB::Digest>,
     ) -> Result<Self, Error<DB, S>> {
         let start_moved = self.target.range.start() != new_target.range.start();
+        tracing::debug!(
+            journal_before = self.journal.size(),
+            old_start = *self.target.range.start(),
+            new_start = *new_target.range.start(),
+            new_end = *new_target.range.end(),
+            outstanding = self.outstanding_requests.len(),
+            "sync reset"
+        );
         self.journal = self.journal.resize(new_target.range.start()).await?;
         if start_moved {
             self.fetched_operations.clear();
@@ -639,6 +647,13 @@ where
 
     /// Returns whether the journal and pinned nodes are both ready for completion.
     fn is_ready_to_complete(&self) -> Result<bool, Error<DB, S>> {
+        tracing::debug!(
+            journal = self.journal.size(),
+            end = *self.target.range.end(),
+            pinned_ready = self.pinned_nodes_ready(),
+            outstanding = self.outstanding_requests.len(),
+            "sync ready check"
+        );
         Ok(self.is_at_target()? && self.pinned_nodes_ready())
     }
 
