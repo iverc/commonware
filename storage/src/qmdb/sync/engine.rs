@@ -723,7 +723,16 @@ where
                 let within_reach = self.journal.size() + 2 * self.fetch_batch_size.get()
                     >= *self.target.range.end();
                 if !self.finish_requested && within_reach {
-                    self.stashed_target = Some(new_target);
+                    if let Some(held) = self.stashed_target.replace(new_target) {
+                        // A second update arrived while holding: release the held
+                        // target so generation regrouping keeps making progress.
+                        return self.reset_for_target_update(held).await.map(|updated| {
+                            let mut updated = updated;
+                            updated.record_progress();
+                            updated.schedule_requests();
+                            NextStep::Continue(updated)
+                        });
+                    }
                     return Ok(NextStep::Continue(self));
                 }
                 // A same-root update that advances is impossible for an append-only log and
