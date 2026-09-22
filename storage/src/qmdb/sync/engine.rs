@@ -393,9 +393,8 @@ where
         if self.awaiting_target {
             return;
         }
-        if self.journal.size() < *self.target.range.end() && self.outstanding_requests.len() == 0
-        {
-            tracing::warn!(
+        if self.journal.size() < *self.target.range.end() && self.outstanding_requests.len() == 0 {
+            tracing::debug!(
                 root = ?self.target.root,
                 journal = self.journal.size(),
                 end = *self.target.range.end(),
@@ -734,10 +733,7 @@ where
                 // Hold only until this target is reached: a parked engine must
                 // follow the next dispatch (tip or generation regroup), and every
                 // database settles on the newest target at the first update lull.
-                if !self.finish_requested
-                    && within_reach
-                    && !self.reached_current_target_reported
-                {
+                if !self.finish_requested && within_reach && !self.reached_current_target_reported {
                     self.stashed_target = Some(new_target);
                     return Ok(NextStep::Continue(self));
                 }

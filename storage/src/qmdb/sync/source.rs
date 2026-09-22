@@ -294,7 +294,9 @@ impl<F: Family, Op: Clone, D: Digest> Clone for Response<F, Op, D> {
                 op: op.clone(),
                 pinned_nodes: pinned_nodes.clone(),
             },
-            Self::Pruned { frontier } => Self::Pruned { frontier: *frontier },
+            Self::Pruned { frontier } => Self::Pruned {
+                frontier: *frontier,
+            },
         }
     }
 }
