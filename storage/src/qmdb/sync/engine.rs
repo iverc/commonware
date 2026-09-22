@@ -262,6 +262,9 @@ where
     /// Set when every source reports the current target as pruned; scheduling
     /// pauses until the next advancing target update.
     awaiting_target: bool,
+    /// Newest target update withheld while the journal is at the current target
+    /// and only pinned nodes are missing; applied on pruned responses or release.
+    stashed_target: Option<Target<DB::Family, DB::Digest>>,
 }
 
 #[cfg(test)]
@@ -336,6 +339,7 @@ where
             reached_target_tx: config.reached_target_tx,
             reached_current_target_reported: false,
             awaiting_target: false,
+            stashed_target: None,
             metrics,
         };
         engine.schedule_requests();
@@ -711,6 +715,16 @@ where
                 if !new_target.advances(&self.target) {
                     return Ok(NextStep::Continue(self));
                 }
+                // The journal has converged on the current target and only pinned
+                // nodes are missing: hold the target still so a size-exact boundary
+                // response can land, and stash the update for later application.
+                if !self.finish_requested
+                    && self.is_at_target()?
+                    && !self.pinned_nodes_ready()
+                {
+                    self.stashed_target = Some(new_target);
+                    return Ok(NextStep::Continue(self));
+                }
                 // A same-root update that advances is impossible for an append-only log and
                 // indicates a caller bug.
                 if new_target.root == self.target.root {
@@ -758,28 +772,17 @@ where
     #[boxed]
     pub(crate) async fn step(mut self) -> Result<NextStep<Self, DB>, Error<DB, S>> {
         self.drain_finish_requests()?;
+        if self.awaiting_target && self.stashed_target.is_some() {
+            let stashed = self.stashed_target.take().expect("checked above");
+            return self.handle_event(Event::TargetUpdate(stashed)).await;
+        }
 
         // Check if sync is complete
         if self.is_ready_to_complete()? {
-            // Take a queued target update before completing at the old target, unless the
-            // caller already asked to finish. Updates that do not advance the target are
-            // discarded.
-            if !self.finish_requested {
-                while let Some(update_rx) = self.update_rx.as_mut() {
-                    match update_rx.try_recv() {
-                        Ok(new_target) => {
-                            if new_target.advances(&self.target) {
-                                return self.handle_event(Event::TargetUpdate(new_target)).await;
-                            }
-                        }
-                        Err(TryRecvError::Empty) => break,
-                        Err(TryRecvError::Disconnected) => {
-                            self.update_rx = None;
-                        }
-                    }
-                }
-            }
-
+            // Complete at the reached target rather than deferring to newer updates:
+            // the set coordinator regroups stragglers, and the application replays
+            // finalized blocks after the anchor, so converging slightly behind the
+            // tip is preferred over never converging under continuous updates.
             self.report_reached_target().await;
 
             if self.finish_rx.is_some() {
