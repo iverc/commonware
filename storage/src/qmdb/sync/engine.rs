@@ -715,13 +715,14 @@ where
                 if !new_target.advances(&self.target) {
                     return Ok(NextStep::Continue(self));
                 }
-                // The journal has converged on the current target and only pinned
-                // nodes are missing: hold the target still so a size-exact boundary
+                // The journal is within reach of the target end: hold the target
+                // still so the remaining operations and a size-exact boundary
                 // response can land, and stash the update for later application.
-                if !self.finish_requested
-                    && self.is_at_target()?
-                    && !self.pinned_nodes_ready()
-                {
+                // Chasing the live tip instead resets the verification size faster
+                // than one fetch round can complete.
+                let within_reach = self.journal.size() + 2 * self.fetch_batch_size.get()
+                    >= *self.target.range.end();
+                if !self.finish_requested && within_reach {
                     self.stashed_target = Some(new_target);
                     return Ok(NextStep::Continue(self));
                 }
