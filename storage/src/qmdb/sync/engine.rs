@@ -393,7 +393,7 @@ where
         if self.awaiting_target {
             return;
         }
-        if self.journal.size() < *self.target.range.end() && self.outstanding_requests.is_empty()
+        if self.journal.size() < *self.target.range.end() && self.outstanding_requests.len() == 0
         {
             tracing::warn!(
                 root = ?self.target.root,
