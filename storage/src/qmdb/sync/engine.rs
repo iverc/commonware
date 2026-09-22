@@ -522,6 +522,13 @@ where
     /// can keep making progress. If the receiver side is closed, we drop the
     /// sender and continue syncing without further reached-target notifications.
     async fn report_reached_target(&mut self) {
+        tracing::warn!(
+            root = ?self.target.root,
+            start = *self.target.range.start(),
+            end = *self.target.range.end(),
+            journal = self.journal.size(),
+            "sync target reached"
+        );
         if self.reached_current_target_reported {
             return;
         }
@@ -788,6 +795,11 @@ where
     /// Build the final database from the completed sync and verify its root against the
     /// target.
     async fn complete(mut self) -> Result<DB, Error<DB, S>> {
+        tracing::warn!(
+            root = ?self.target.root,
+            end = *self.target.range.end(),
+            "sync complete"
+        );
         self.journal = self.journal.sync().await?;
 
         let database = DB::from_sync_result(
