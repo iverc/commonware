@@ -391,6 +391,7 @@ where
         }
         let target_size = self.target.range.end();
         tracing::debug!(
+            root = ?self.target.root,
             target_start = *self.target.range.start(),
             target_end = *target_size,
             journal_size = self.journal.size(),
@@ -655,6 +656,7 @@ where
                 // it and wait for the next advancing target update.
                 tracing::warn!(
                     ?request,
+                    root = ?self.target.root,
                     frontier = *frontier,
                     "sync target pruned at all sources; awaiting target update"
                 );
