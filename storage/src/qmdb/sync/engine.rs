@@ -773,9 +773,18 @@ where
     #[boxed]
     pub(crate) async fn step(mut self) -> Result<NextStep<Self, DB>, Error<DB, S>> {
         self.drain_finish_requests()?;
-        if self.awaiting_target && self.stashed_target.is_some() {
-            let stashed = self.stashed_target.take().expect("checked above");
-            return self.handle_event(Event::TargetUpdate(stashed)).await;
+        if self.awaiting_target {
+            if let Some(stashed) = self.stashed_target.take()
+                && stashed.advances(&self.target)
+            {
+                // Force the reset: routing through handle_event would re-stash
+                // (the journal is still within reach) and spin without clearing
+                // the pruned-target pause.
+                let mut updated = self.reset_for_target_update(stashed).await?;
+                updated.record_progress();
+                updated.schedule_requests()?;
+                return Ok(NextStep::Continue(updated));
+            }
         }
 
         // Check if sync is complete
