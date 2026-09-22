@@ -393,6 +393,15 @@ where
         if self.awaiting_target {
             return;
         }
+        if self.journal.size() < *self.target.range.end() && self.outstanding_requests.is_empty()
+        {
+            tracing::warn!(
+                root = ?self.target.root,
+                journal = self.journal.size(),
+                end = *self.target.range.end(),
+                "sync stalled with no outstanding requests"
+            );
+        }
         let target_size = self.target.range.end();
         tracing::debug!(
             root = ?self.target.root,
@@ -722,17 +731,14 @@ where
                 // than one fetch round can complete.
                 let within_reach = self.journal.size() + 2 * self.fetch_batch_size.get()
                     >= *self.target.range.end();
-                if !self.finish_requested && within_reach {
-                    if let Some(held) = self.stashed_target.replace(new_target) {
-                        // A second update arrived while holding: release the held
-                        // target so generation regrouping keeps making progress.
-                        return self.reset_for_target_update(held).await.map(|updated| {
-                            let mut updated = updated;
-                            updated.record_progress();
-                            updated.schedule_requests();
-                            NextStep::Continue(updated)
-                        });
-                    }
+                // Hold only until this target is reached: a parked engine must
+                // follow the next dispatch (tip or generation regroup), and every
+                // database settles on the newest target at the first update lull.
+                if !self.finish_requested
+                    && within_reach
+                    && !self.reached_current_target_reported
+                {
+                    self.stashed_target = Some(new_target);
                     return Ok(NextStep::Continue(self));
                 }
                 // A same-root update that advances is impossible for an append-only log and
