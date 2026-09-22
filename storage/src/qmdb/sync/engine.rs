@@ -782,7 +782,7 @@ where
                 // the pruned-target pause.
                 let mut updated = self.reset_for_target_update(stashed).await?;
                 updated.record_progress();
-                updated.schedule_requests()?;
+                updated.schedule_requests();
                 return Ok(NextStep::Continue(updated));
             }
         }
