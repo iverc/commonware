@@ -472,13 +472,16 @@ where
             }
         }
 
-        // Preserve operation fetches for retained targets at or beyond the new lower
-        // bound; their late responses verify against retained roots. Boundary requests
-        // are always cancelled so the fresh target size can fetch its pinned nodes.
+        // Preserve fetches for retained targets at or beyond the new lower bound;
+        // their late responses verify against retained roots. A boundary request at
+        // the unchanged start also survives (it seeds the journal position), while
+        // one whose start moved is cancelled so the fresh size can fetch pinned nodes.
         let new_start = new_target.range.start();
         self.outstanding_requests.retain(|request| {
-            let eligible =
-                matches!(request, Request::Operations { .. }) && request.start() >= new_start;
+            let eligible = match request {
+                Request::Operations { .. } => request.start() >= new_start,
+                Request::Boundary { start, .. } => *start == new_start,
+            };
             eligible && self.retained_sizes.contains(&request.size())
         });
 
