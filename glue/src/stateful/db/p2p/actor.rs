@@ -270,6 +270,7 @@ where
                     (&key, &response),
                     (Request::Operations { .. }, Response::Operations { .. })
                         | (Request::Boundary { .. }, Response::Boundary { .. })
+                        | (_, Response::Pruned { .. })
                 ) =>
             {
                 response

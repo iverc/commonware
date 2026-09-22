@@ -74,7 +74,7 @@ where
     Op: Encode,
     H: Hasher,
 {
-    if response.proof().leaves != request.size() {
+    if response.is_pruned() || response.proof().leaves != request.size() {
         return false;
     }
 
@@ -259,6 +259,9 @@ where
 
     /// Tracks whether the current target has already been reported as reached.
     reached_current_target_reported: bool,
+    /// Set when every source reports the current target as pruned; scheduling
+    /// pauses until the next advancing target update.
+    awaiting_target: bool,
 }
 
 #[cfg(test)]
@@ -332,6 +335,7 @@ where
             finish_rx: config.finish_rx,
             reached_target_tx: config.reached_target_tx,
             reached_current_target_reported: false,
+            awaiting_target: false,
             metrics,
         };
         engine.schedule_requests();
@@ -349,6 +353,13 @@ where
                 let result: Result<_, S::Error> = async {
                     let (mut response, mut feedback) = source.serve(request).await?;
                     loop {
+                        if matches!(response, Response::Pruned { .. }) {
+                            if let Some(feedback) = feedback {
+                                feedback.accept();
+                            }
+                            tracing::warn!(?request, "sync request pruned at source");
+                            return Ok(Some(response));
+                        }
                         if verify_response::<DB::Family, DB::Op, DB::Hasher>(
                             request, &root, &response,
                         ) {
@@ -375,6 +386,9 @@ where
 
     /// Schedule new fetch requests for operations in the sync range that we haven't yet fetched.
     fn schedule_requests(&mut self) {
+        if self.awaiting_target {
+            return;
+        }
         let target_size = self.target.range.end();
         tracing::debug!(
             target_start = *self.target.range.start(),
@@ -464,6 +478,7 @@ where
 
         self.target = new_target;
         self.reached_current_target_reported = false;
+        self.awaiting_target = false;
         Ok(self)
     }
 
@@ -621,23 +636,33 @@ where
             return Ok(());
         };
 
-        let response = fetch_result
-            .result
-            .map_err(SyncError::Source)?
-            .ok_or(SyncError::Engine(EngineError::InvalidResponse))?;
+        let response = fetch_result.result.map_err(SyncError::Source)?;
 
         let start_loc = request.start();
         match response {
-            Response::Operations { operations, .. } => {
+            Some(Response::Operations { operations, .. }) => {
                 self.store_operations(start_loc, operations);
             }
-            Response::Boundary {
+            Some(Response::Boundary {
                 op, pinned_nodes, ..
-            } => {
+            }) => {
                 // A tracked boundary request belongs to the current target.
                 self.pinned_nodes = Some(pinned_nodes);
                 self.store_operations(start_loc, vec![op]);
             }
+            Some(Response::Pruned { frontier }) => {
+                // Every reachable source pruned past this target; stop requesting
+                // it and wait for the next advancing target update.
+                tracing::warn!(
+                    ?request,
+                    frontier = *frontier,
+                    "sync target pruned at all sources; awaiting target update"
+                );
+                self.awaiting_target = true;
+            }
+            // No candidate produced a usable response; the gap remains open and
+            // scheduling reissues the request.
+            None => {}
         }
 
         Ok(())
