@@ -457,9 +457,12 @@ where
         mut self,
         new_target: Target<DB::Family, DB::Digest>,
     ) -> Result<Self, Error<DB, S>> {
+        let start_moved = self.target.range.start() != new_target.range.start();
         self.journal = self.journal.resize(new_target.range.start()).await?;
-        self.fetched_operations.clear();
-        self.pinned_nodes = None;
+        if start_moved {
+            self.fetched_operations.clear();
+            self.pinned_nodes = None;
+        }
 
         // Retain the prior target size so its fetches stay eligible until eviction.
         if self.max_retained_roots > 0 {
@@ -469,12 +472,14 @@ where
             }
         }
 
-        // Preserve operation fetches for retained targets beyond the new lower bound.
-        // The lower bound never decreases, so this cancels old boundary requests and
-        // leaves the new boundary free for fetching pinned nodes.
+        // Preserve operation fetches for retained targets at or beyond the new lower
+        // bound; their late responses verify against retained roots. Boundary requests
+        // are always cancelled so the fresh target size can fetch its pinned nodes.
         let new_start = new_target.range.start();
         self.outstanding_requests.retain(|request| {
-            request.start() > new_start && self.retained_sizes.contains(&request.size())
+            let eligible =
+                matches!(request, Request::Operations { .. }) && request.start() >= new_start;
+            eligible && self.retained_sizes.contains(&request.size())
         });
 
         self.target = new_target;
