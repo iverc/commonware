@@ -341,6 +341,7 @@ where
 
     /// Track `request` and spawn its fetch against the shared source.
     fn spawn_fetch(&mut self, request: Request<DB::Family>) {
+        tracing::debug!(?request, "qmdb sync fetch spawned");
         let source = Arc::clone(&self.source);
         let root = self.target.root;
         self.outstanding_requests
@@ -375,6 +376,14 @@ where
     /// Schedule new fetch requests for operations in the sync range that we haven't yet fetched.
     fn schedule_requests(&mut self) {
         let target_size = self.target.range.end();
+        tracing::debug!(
+            target_start = *self.target.range.start(),
+            target_end = *target_size,
+            journal_size = self.journal.size(),
+            outstanding = self.outstanding_requests.len(),
+            pinned_ready = self.pinned_nodes_ready(),
+            "qmdb sync scheduling"
+        );
 
         // Schedule a boundary request at the lower sync bound if pinned nodes are still
         // needed and one isn't already in flight. The pinned nodes it returns are what let

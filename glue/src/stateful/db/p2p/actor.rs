@@ -339,6 +339,7 @@ where
 
             let Ok((response, _feedback)) = result else {
                 serve_requests.inc(status::Status::Failure);
+                tracing::warn!(?key, error = ?result.err(), "qmdb serve failed");
                 return;
             };
 
