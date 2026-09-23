@@ -442,6 +442,28 @@ impl<R> Feedback<R> {
         Self { sender, receiver }
     }
 
+    /// Split into the current verdict sender and the future-candidate receiver.
+    ///
+    /// Counterpart of [`Self::from_parts`]: lets callers translate the
+    /// candidate stream across response types and reassemble a feedback.
+    pub fn into_parts(
+        self,
+    ) -> (
+        oneshot::Sender<bool>,
+        mpsc::Receiver<(R, oneshot::Sender<bool>)>,
+    ) {
+        let Self { sender, receiver } = self;
+        (sender, receiver)
+    }
+
+    /// Assemble feedback from a verdict sender and a candidate receiver.
+    pub const fn from_parts(
+        sender: oneshot::Sender<bool>,
+        receiver: mpsc::Receiver<(R, oneshot::Sender<bool>)>,
+    ) -> Self {
+        Self { sender, receiver }
+    }
+
     /// Reports that the response's proof is valid and closes the request.
     pub fn accept(self) {
         let _ = self.sender.send(true);
