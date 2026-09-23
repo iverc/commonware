@@ -513,6 +513,7 @@ where
         self.target = new_target;
         self.reached_current_target_reported = false;
         self.awaiting_target = false;
+        self.unproductive_streak = 0;
         Ok(self)
     }
 
@@ -797,6 +798,11 @@ where
     #[boxed]
     pub(crate) async fn step(mut self) -> Result<NextStep<Self, DB>, Error<DB, S>> {
         self.drain_finish_requests()?;
+        if self.awaiting_target && self.stashed_target.is_none() {
+            // Nothing stashed to apply: the pause was released or the stash was
+            // consumed; resume scheduling at the current target.
+            self.awaiting_target = false;
+        }
         if self.awaiting_target {
             if let Some(stashed) = self.stashed_target.take()
                 && stashed.advances(&self.target)
