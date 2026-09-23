@@ -265,6 +265,10 @@ where
     /// Newest target update withheld while the journal is at the current target
     /// and only pinned nodes are missing; applied on pruned responses or release.
     stashed_target: Option<Target<DB::Family, DB::Digest>>,
+    /// Consecutive unproductive fetch results since the hold began. A held
+    /// target whose every fetch is unproductive (the source moved on) is
+    /// released after a few attempts; isolated late responses do not release.
+    unproductive_streak: u32,
 }
 
 #[cfg(test)]
@@ -340,6 +344,7 @@ where
             reached_current_target_reported: false,
             awaiting_target: false,
             stashed_target: None,
+            unproductive_streak: 0,
             metrics,
         };
         engine.schedule_requests();
@@ -685,6 +690,7 @@ where
         match response {
             Some(Response::Operations { operations, .. }) => {
                 self.store_operations(start_loc, operations);
+                self.unproductive_streak = 0;
             }
             Some(Response::Boundary {
                 op, pinned_nodes, ..
@@ -705,8 +711,14 @@ where
                 self.awaiting_target = true;
             }
             // No candidate produced a usable response; the gap remains open and
-            // scheduling reissues the request.
-            None => {}
+            // scheduling reissues the request. A held target that keeps coming
+            // back empty is dead: release the hold so the stashed update wins.
+            None => {
+                self.unproductive_streak = self.unproductive_streak.saturating_add(1);
+                if self.stashed_target.is_some() && self.unproductive_streak >= 2 {
+                    self.awaiting_target = true;
+                }
+            }
         }
 
         Ok(())
@@ -735,6 +747,7 @@ where
                 // database settles on the newest target at the first update lull.
                 if !self.finish_requested && within_reach && !self.reached_current_target_reported {
                     self.stashed_target = Some(new_target);
+                    self.unproductive_streak = 0;
                     return Ok(NextStep::Continue(self));
                 }
                 // A same-root update that advances is impossible for an append-only log and
