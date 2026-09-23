@@ -269,10 +269,10 @@ where
     /// target whose every fetch is unproductive (the source moved on) is
     /// released after a few attempts; isolated late responses do not release.
     unproductive_streak: u32,
-    /// Whether verified operations were stored for the current target: the
-    /// hold protects demonstrated progress, so a target without any verified
-    /// work is superseded immediately.
-    applied_since_target: bool,
+    /// Whether this engine has ever stored verified operations: the hold
+    /// protects engines that have demonstrated progress, while one that has
+    /// never verified anything is superseded immediately.
+    applied_ever: bool,
 }
 
 #[cfg(test)]
@@ -349,7 +349,7 @@ where
             awaiting_target: false,
             stashed_target: None,
             unproductive_streak: 0,
-            applied_since_target: false,
+            applied_ever: false,
             metrics,
         };
         engine.schedule_requests();
@@ -518,7 +518,6 @@ where
         self.target = new_target;
         self.reached_current_target_reported = false;
         self.awaiting_target = false;
-        self.applied_since_target = false;
         Ok(self)
     }
 
@@ -697,7 +696,7 @@ where
             Some(Response::Operations { operations, .. }) => {
                 self.store_operations(start_loc, operations);
                 self.unproductive_streak = 0;
-                self.applied_since_target = true;
+                self.applied_ever = true;
             }
             Some(Response::Boundary {
                 op, pinned_nodes, ..
@@ -754,12 +753,11 @@ where
                 // database settles on the newest target at the first update lull.
                 if !self.finish_requested
                     && within_reach
-                    && self.applied_since_target
+                    && self.applied_ever
                     && !self.reached_current_target_reported
                 {
                     self.stashed_target = Some(new_target);
                     self.unproductive_streak = 0;
-                    // (hold re-arms below only with demonstrated progress)
                     return Ok(NextStep::Continue(self));
                 }
                 // A same-root update that advances is impossible for an append-only log and
