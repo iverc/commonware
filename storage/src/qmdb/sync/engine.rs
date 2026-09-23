@@ -265,6 +265,10 @@ where
     /// Newest target update withheld while the journal is at the current target
     /// and only pinned nodes are missing; applied on pruned responses or release.
     stashed_target: Option<Target<DB::Family, DB::Digest>>,
+    /// Consecutive unproductive fetch results while a target is held. A held
+    /// target whose fetches repeatedly fail verification is dead: the hold is
+    /// released so the stashed newer target wins.
+    unproductive_streak: u32,
 }
 
 #[cfg(test)]
@@ -340,6 +344,7 @@ where
             reached_current_target_reported: false,
             awaiting_target: false,
             stashed_target: None,
+            unproductive_streak: 0,
             metrics,
         };
         engine.schedule_requests();
@@ -508,6 +513,7 @@ where
         self.target = new_target;
         self.reached_current_target_reported = false;
         self.awaiting_target = false;
+        self.unproductive_streak = 0;
         Ok(self)
     }
 
@@ -685,6 +691,7 @@ where
         match response {
             Some(Response::Operations { operations, .. }) => {
                 self.store_operations(start_loc, operations);
+                self.unproductive_streak = 0;
             }
             Some(Response::Boundary {
                 op, pinned_nodes, ..
@@ -705,8 +712,14 @@ where
                 self.awaiting_target = true;
             }
             // No candidate produced a usable response; the gap remains open and
-            // scheduling reissues the request.
-            None => {}
+            // scheduling reissues the request. Repeated failure while holding
+            // marks the target dead and releases the hold.
+            None => {
+                self.unproductive_streak = self.unproductive_streak.saturating_add(1);
+                if self.stashed_target.is_some() && self.unproductive_streak >= 2 {
+                    self.awaiting_target = true;
+                }
+            }
         }
 
         Ok(())
@@ -735,6 +748,7 @@ where
                 // database settles on the newest target at the first update lull.
                 if !self.finish_requested && within_reach && !self.reached_current_target_reported {
                     self.stashed_target = Some(new_target);
+                    self.unproductive_streak = 0;
                     return Ok(NextStep::Continue(self));
                 }
                 // A same-root update that advances is impossible for an append-only log and
@@ -784,6 +798,10 @@ where
     #[boxed]
     pub(crate) async fn step(mut self) -> Result<NextStep<Self, DB>, Error<DB, S>> {
         self.drain_finish_requests()?;
+        if self.awaiting_target && self.stashed_target.is_none() {
+            // Nothing stashed to apply: resume scheduling at the current target.
+            self.awaiting_target = false;
+        }
         if self.awaiting_target {
             if let Some(stashed) = self.stashed_target.take()
                 && stashed.advances(&self.target)
