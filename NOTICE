@@ -1,0 +1,18 @@
+iverc/commonware — a fork of commonwarexyz/monorepo (branch: vera)
+Copyright (c) 2026 Commonware, Inc. — all upstream code, dual MIT OR Apache-2.0.
+
+This fork carries Vera-specific modifications to the following files
+(Apache-2.0 §4(b) notice; upstream licensing and copyright are retained):
+
+  glue/src/stateful/db/p2p/actor.rs
+      Logs serve failures; accepts the Pruned response shape in deliveries.
+
+  storage/src/qmdb/sync/engine.rs
+      Explicit Pruned-response handling with target backoff, retarget work
+      preservation, completion without deferral, and the park-until-reached
+      target hold; engine observability.
+
+  storage/src/qmdb/sync/source.rs
+      Adds the Response::Pruned { frontier } wire variant and its codec.
+
+Everything else is unmodified upstream code.
