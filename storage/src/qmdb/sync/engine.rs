@@ -1129,12 +1129,9 @@ mod tests {
             let mut engine = engine.reset_for_target_update(target_2).await.unwrap();
 
             assert_eq!(engine.retained_sizes, BTreeSet::from([Location::new(10)]));
-            // The boundary request at the unchanged start survives: it seeds the
-            // journal position, and its late response verifies against the
-            // retained size. Root eviction below still cancels it.
-            assert!(engine.outstanding_requests.contains(&Location::new(5)));
+            assert!(!engine.outstanding_requests.contains(&Location::new(5)));
             assert!(engine.outstanding_requests.contains(&Location::new(6)));
-            assert_eq!(engine.outstanding_requests.len(), 2);
+            assert_eq!(engine.outstanding_requests.len(), 1);
 
             insert_pending_request(
                 &mut engine,
@@ -1144,7 +1141,7 @@ mod tests {
                     max_ops: NZU64!(1),
                 },
             );
-            assert_eq!(engine.outstanding_requests.len(), 3);
+            assert_eq!(engine.outstanding_requests.len(), 2);
             let queued_old_result = stale_fetch_result(old_operation_id);
             let target_3 = Target {
                 root: sha256::Digest::from([3u8; 32]),
@@ -1218,17 +1215,13 @@ mod tests {
     }
 
     #[test]
-    fn step_completes_at_the_reached_target_despite_queued_updates() {
+    fn step_takes_queued_update_before_completing() {
         deterministic::Runner::default().start(|context| async move {
             let (update_tx, update_rx) = mpsc::channel(2);
             let mut config = test_engine_config(context, 10, Arc::new(AtomicUsize::new(0)));
-            // TestDb's root, so completion's final check passes.
-            config.target.root = sha256::Digest::from([0u8; 32]);
             config.update_rx = Some(update_rx);
-            // Queue a stale update and an advancing one. The engine completes at
-            // its reached target instead of chasing newer updates: the caller
-            // regroups stragglers and replays what follows the anchor, and
-            // deferring forever never converges under continuous updates.
+            // Queue a stale update and an advancing one. The stale one is discarded and
+            // the advancing one retargets the engine instead of completing.
             let stale = Target {
                 root: sha256::Digest::from([2u8; 32]),
                 range: non_empty_range!(Location::new(5), Location::new(10)),
@@ -1241,10 +1234,10 @@ mod tests {
             update_tx.send(advancing.clone()).await.unwrap();
 
             let engine = Engine::new(config).await.unwrap();
-            let NextStep::Complete(database) = engine.step().await.unwrap() else {
-                panic!("engine should complete at the reached target");
+            let NextStep::Continue(engine) = engine.step().await.unwrap() else {
+                panic!("engine should retarget instead of completing");
             };
-            let _ = database;
+            assert_eq!(engine.target, advancing);
         });
     }
 
