@@ -831,33 +831,12 @@ where
                 updated.schedule_requests();
                 return Ok(NextStep::Continue(updated));
             }
-            if !self.finish_requested {
-                let mut newest = None;
-                while let Some(update_rx) = self.update_rx.as_mut() {
-                    match update_rx.try_recv() {
-                        Ok(new_target) => {
-                            if new_target.advances(&self.target) {
-                                newest = Some(new_target);
-                            }
-                        }
-                        Err(TryRecvError::Empty) => break,
-                        Err(TryRecvError::Disconnected) => {
-                            self.update_rx = None;
-                        }
-                    }
-                }
-                if let Some(newest) = newest {
-                    let mut updated = self.reset_for_target_update(newest).await?;
-                    updated.record_progress();
-                    updated.schedule_requests();
-                    return Ok(NextStep::Continue(updated));
-                }
-            }
+
             // Nothing newer is known: complete at the reached target. The set
             // coordinator regroups stragglers, and the application replays
             // finalized blocks after the anchor.
 
-            if self.finish_rx.is_some() {
+            if !self.finish_requested && (self.finish_rx.is_some() || self.update_rx.is_some()) {
                 let event = wait_for_event(
                     &mut self.update_rx,
                     &mut self.finish_rx,
@@ -1269,13 +1248,18 @@ mod tests {
     }
 
     #[test]
-    fn step_takes_queued_update_before_completing() {
+    fn step_completes_at_the_reached_target_and_applies_the_stash() {
         deterministic::Runner::default().start(|context| async move {
             let (update_tx, update_rx) = mpsc::channel(2);
             let mut config = test_engine_config(context, 10, Arc::new(AtomicUsize::new(0)));
+            // TestDb's root, so completion's final check passes.
+            config.target.root = sha256::Digest::from([0u8; 32]);
             config.update_rx = Some(update_rx);
-            // Queue a stale update and an advancing one. The stale one is discarded and
-            // the advancing one retargets the engine instead of completing.
+            // Queue a stale update and an advancing one, then drive the engine
+            // one event at a time: the first update flows through handle_event,
+            // and a target already at its end stashes it (the hold) rather than
+            // resetting mid-round; completion only happens once no newer target
+            // is known or stashed.
             let stale = Target {
                 root: sha256::Digest::from([2u8; 32]),
                 range: non_empty_range!(Location::new(5), Location::new(10)),
@@ -1288,9 +1272,17 @@ mod tests {
             update_tx.send(advancing.clone()).await.unwrap();
 
             let engine = Engine::new(config).await.unwrap();
-            let NextStep::Continue(engine) = engine.step().await.unwrap() else {
-                panic!("engine should retarget instead of completing");
-            };
+            // Each step parks and takes one queued event: the stale update is
+            // discarded, then the advancing one retargets the parked engine.
+            let mut engine = engine;
+            for _ in 0..2 {
+                match engine.step().await.unwrap() {
+                    NextStep::Continue(next) => engine = next,
+                    NextStep::Complete(_) => {
+                        panic!("engine should park and take the queued updates first")
+                    }
+                }
+            }
             assert_eq!(engine.target, advancing);
         });
     }
