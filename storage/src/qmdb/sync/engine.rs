@@ -716,9 +716,6 @@ where
             // back empty is dead: release the hold so the stashed update wins.
             None => {
                 self.unproductive_streak = self.unproductive_streak.saturating_add(1);
-                if self.stashed_target.is_some() && self.unproductive_streak >= 2 {
-                    self.awaiting_target = true;
-                }
             }
         }
 
