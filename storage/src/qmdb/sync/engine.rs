@@ -269,6 +269,10 @@ where
     /// target whose every fetch is unproductive (the source moved on) is
     /// released after a few attempts; isolated late responses do not release.
     unproductive_streak: u32,
+    /// Whether verified operations were stored for the current target: the
+    /// hold protects demonstrated progress, so a target without any verified
+    /// work is superseded immediately.
+    applied_since_target: bool,
 }
 
 #[cfg(test)]
@@ -345,6 +349,7 @@ where
             awaiting_target: false,
             stashed_target: None,
             unproductive_streak: 0,
+            applied_since_target: false,
             metrics,
         };
         engine.schedule_requests();
@@ -513,6 +518,7 @@ where
         self.target = new_target;
         self.reached_current_target_reported = false;
         self.awaiting_target = false;
+        self.applied_since_target = false;
         Ok(self)
     }
 
@@ -691,6 +697,7 @@ where
             Some(Response::Operations { operations, .. }) => {
                 self.store_operations(start_loc, operations);
                 self.unproductive_streak = 0;
+                self.applied_since_target = true;
             }
             Some(Response::Boundary {
                 op, pinned_nodes, ..
@@ -745,9 +752,14 @@ where
                 // Hold only until this target is reached: a parked engine must
                 // follow the next dispatch (tip or generation regroup), and every
                 // database settles on the newest target at the first update lull.
-                if !self.finish_requested && within_reach && !self.reached_current_target_reported {
+                if !self.finish_requested
+                    && within_reach
+                    && self.applied_since_target
+                    && !self.reached_current_target_reported
+                {
                     self.stashed_target = Some(new_target);
                     self.unproductive_streak = 0;
+                    // (hold re-arms below only with demonstrated progress)
                     return Ok(NextStep::Continue(self));
                 }
                 // A same-root update that advances is impossible for an append-only log and
