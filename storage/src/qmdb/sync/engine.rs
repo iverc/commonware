@@ -269,10 +269,6 @@ where
     /// target whose every fetch is unproductive (the source moved on) is
     /// released after a few attempts; isolated late responses do not release.
     unproductive_streak: u32,
-    /// Whether this engine has ever stored verified operations: the hold
-    /// protects engines that have demonstrated progress, while one that has
-    /// never verified anything is superseded immediately.
-    applied_ever: bool,
 }
 
 #[cfg(test)]
@@ -349,7 +345,6 @@ where
             awaiting_target: false,
             stashed_target: None,
             unproductive_streak: 0,
-            applied_ever: false,
             metrics,
         };
         engine.schedule_requests();
@@ -696,7 +691,6 @@ where
             Some(Response::Operations { operations, .. }) => {
                 self.store_operations(start_loc, operations);
                 self.unproductive_streak = 0;
-                self.applied_ever = true;
             }
             Some(Response::Boundary {
                 op, pinned_nodes, ..
@@ -751,11 +745,7 @@ where
                 // Hold only until this target is reached: a parked engine must
                 // follow the next dispatch (tip or generation regroup), and every
                 // database settles on the newest target at the first update lull.
-                if !self.finish_requested
-                    && within_reach
-                    && self.applied_ever
-                    && !self.reached_current_target_reported
-                {
+                if !self.finish_requested && within_reach && !self.reached_current_target_reported {
                     self.stashed_target = Some(new_target);
                     self.unproductive_streak = 0;
                     return Ok(NextStep::Continue(self));
