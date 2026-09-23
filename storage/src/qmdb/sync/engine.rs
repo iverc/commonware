@@ -361,7 +361,6 @@ where
             .insert(request, move |id| async move {
                 let result: Result<_, S::Error> = async {
                     let (mut response, mut feedback) = source.serve(request).await?;
-                    let mut rejections = 0u32;
                     loop {
                         if matches!(response, Response::Pruned { .. }) {
                             if let Some(feedback) = feedback {
@@ -379,13 +378,6 @@ where
                             return Ok(Some(response));
                         }
 
-                        // A source cycling candidates without a verifiable
-                        // answer is treated as unproductive so the engine can
-                        // reassess the target.
-                        rejections += 1;
-                        if rejections > 4 {
-                            return Ok(None);
-                        }
                         let Some(current) = feedback else {
                             return Ok(None);
                         };
