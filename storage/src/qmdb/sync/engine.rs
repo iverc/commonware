@@ -819,11 +819,46 @@ where
 
         // Check if sync is complete
         if self.is_ready_to_complete()? {
-            // Complete at the reached target rather than deferring to newer updates:
-            // the set coordinator regroups stragglers, and the application replays
-            // finalized blocks after the anchor, so converging slightly behind the
-            // tip is preferred over never converging under continuous updates.
+            // Report the reached generation before anything else: set-level
+            // convergence depends on this signal arriving even while newer
+            // targets keep streaming in.
             self.report_reached_target().await;
+
+            // Newest known target wins over completing at the reached one.
+            // Take the stash and any queued updates before parking.
+            if let Some(stashed) = self.stashed_target.take()
+                && stashed.advances(&self.target)
+            {
+                let mut updated = self.reset_for_target_update(stashed).await?;
+                updated.record_progress();
+                updated.schedule_requests();
+                return Ok(NextStep::Continue(updated));
+            }
+            if !self.finish_requested {
+                let mut newest = None;
+                while let Some(update_rx) = self.update_rx.as_mut() {
+                    match update_rx.try_recv() {
+                        Ok(new_target) => {
+                            if new_target.advances(&self.target) {
+                                newest = Some(new_target);
+                            }
+                        }
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            self.update_rx = None;
+                        }
+                    }
+                }
+                if let Some(newest) = newest {
+                    let mut updated = self.reset_for_target_update(newest).await?;
+                    updated.record_progress();
+                    updated.schedule_requests();
+                    return Ok(NextStep::Continue(updated));
+                }
+            }
+            // Nothing newer is known: complete at the reached target. The set
+            // coordinator regroups stragglers, and the application replays
+            // finalized blocks after the anchor.
 
             if self.finish_rx.is_some() {
                 let event = wait_for_event(
@@ -1148,9 +1183,12 @@ mod tests {
             let mut engine = engine.reset_for_target_update(target_2).await.unwrap();
 
             assert_eq!(engine.retained_sizes, BTreeSet::from([Location::new(10)]));
-            assert!(!engine.outstanding_requests.contains(&Location::new(5)));
+            // The boundary request at the unchanged start survives: it seeds the
+            // journal position, and its late response verifies against the
+            // retained size. Root eviction below still cancels it.
+            assert!(engine.outstanding_requests.contains(&Location::new(5)));
             assert!(engine.outstanding_requests.contains(&Location::new(6)));
-            assert_eq!(engine.outstanding_requests.len(), 1);
+            assert_eq!(engine.outstanding_requests.len(), 2);
 
             insert_pending_request(
                 &mut engine,
@@ -1160,7 +1198,7 @@ mod tests {
                     max_ops: NZU64!(1),
                 },
             );
-            assert_eq!(engine.outstanding_requests.len(), 2);
+            assert_eq!(engine.outstanding_requests.len(), 3);
             let queued_old_result = stale_fetch_result(old_operation_id);
             let target_3 = Target {
                 root: sha256::Digest::from([3u8; 32]),
