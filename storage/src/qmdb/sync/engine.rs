@@ -265,10 +265,6 @@ where
     /// Newest target update withheld while the journal is at the current target
     /// and only pinned nodes are missing; applied on pruned responses or release.
     stashed_target: Option<Target<DB::Family, DB::Digest>>,
-    /// Consecutive unproductive fetch results since the hold began. A held
-    /// target whose every fetch is unproductive (the source moved on) is
-    /// released after a few attempts; isolated late responses do not release.
-    unproductive_streak: u32,
 }
 
 #[cfg(test)]
@@ -344,7 +340,6 @@ where
             reached_current_target_reported: false,
             awaiting_target: false,
             stashed_target: None,
-            unproductive_streak: 0,
             metrics,
         };
         engine.schedule_requests();
@@ -513,7 +508,6 @@ where
         self.target = new_target;
         self.reached_current_target_reported = false;
         self.awaiting_target = false;
-        self.unproductive_streak = 0;
         Ok(self)
     }
 
@@ -691,7 +685,6 @@ where
         match response {
             Some(Response::Operations { operations, .. }) => {
                 self.store_operations(start_loc, operations);
-                self.unproductive_streak = 0;
             }
             Some(Response::Boundary {
                 op, pinned_nodes, ..
@@ -712,11 +705,8 @@ where
                 self.awaiting_target = true;
             }
             // No candidate produced a usable response; the gap remains open and
-            // scheduling reissues the request. A held target that keeps coming
-            // back empty is dead: release the hold so the stashed update wins.
-            None => {
-                self.unproductive_streak = self.unproductive_streak.saturating_add(1);
-            }
+            // scheduling reissues the request.
+            None => {}
         }
 
         Ok(())
@@ -745,7 +735,6 @@ where
                 // database settles on the newest target at the first update lull.
                 if !self.finish_requested && within_reach && !self.reached_current_target_reported {
                     self.stashed_target = Some(new_target);
-                    self.unproductive_streak = 0;
                     return Ok(NextStep::Continue(self));
                 }
                 // A same-root update that advances is impossible for an append-only log and
@@ -795,11 +784,6 @@ where
     #[boxed]
     pub(crate) async fn step(mut self) -> Result<NextStep<Self, DB>, Error<DB, S>> {
         self.drain_finish_requests()?;
-        if self.awaiting_target && self.stashed_target.is_none() {
-            // Nothing stashed to apply: the pause was released or the stash was
-            // consumed; resume scheduling at the current target.
-            self.awaiting_target = false;
-        }
         if self.awaiting_target {
             if let Some(stashed) = self.stashed_target.take()
                 && stashed.advances(&self.target)
@@ -816,27 +800,13 @@ where
 
         // Check if sync is complete
         if self.is_ready_to_complete()? {
-            // Report the reached generation before anything else: set-level
-            // convergence depends on this signal arriving even while newer
-            // targets keep streaming in.
+            // Complete at the reached target rather than deferring to newer updates:
+            // the set coordinator regroups stragglers, and the application replays
+            // finalized blocks after the anchor, so converging slightly behind the
+            // tip is preferred over never converging under continuous updates.
             self.report_reached_target().await;
 
-            // Newest known target wins over completing at the reached one.
-            // Take the stash and any queued updates before parking.
-            if let Some(stashed) = self.stashed_target.take()
-                && stashed.advances(&self.target)
-            {
-                let mut updated = self.reset_for_target_update(stashed).await?;
-                updated.record_progress();
-                updated.schedule_requests();
-                return Ok(NextStep::Continue(updated));
-            }
-
-            // Nothing newer is known: complete at the reached target. The set
-            // coordinator regroups stragglers, and the application replays
-            // finalized blocks after the anchor.
-
-            if !self.finish_requested && (self.finish_rx.is_some() || self.update_rx.is_some()) {
+            if self.finish_rx.is_some() {
                 let event = wait_for_event(
                     &mut self.update_rx,
                     &mut self.finish_rx,
@@ -1159,12 +1129,9 @@ mod tests {
             let mut engine = engine.reset_for_target_update(target_2).await.unwrap();
 
             assert_eq!(engine.retained_sizes, BTreeSet::from([Location::new(10)]));
-            // The boundary request at the unchanged start survives: it seeds the
-            // journal position, and its late response verifies against the
-            // retained size. Root eviction below still cancels it.
-            assert!(engine.outstanding_requests.contains(&Location::new(5)));
+            assert!(!engine.outstanding_requests.contains(&Location::new(5)));
             assert!(engine.outstanding_requests.contains(&Location::new(6)));
-            assert_eq!(engine.outstanding_requests.len(), 2);
+            assert_eq!(engine.outstanding_requests.len(), 1);
 
             insert_pending_request(
                 &mut engine,
@@ -1174,7 +1141,7 @@ mod tests {
                     max_ops: NZU64!(1),
                 },
             );
-            assert_eq!(engine.outstanding_requests.len(), 3);
+            assert_eq!(engine.outstanding_requests.len(), 2);
             let queued_old_result = stale_fetch_result(old_operation_id);
             let target_3 = Target {
                 root: sha256::Digest::from([3u8; 32]),
@@ -1248,18 +1215,13 @@ mod tests {
     }
 
     #[test]
-    fn step_completes_at_the_reached_target_and_applies_the_stash() {
+    fn step_takes_queued_update_before_completing() {
         deterministic::Runner::default().start(|context| async move {
             let (update_tx, update_rx) = mpsc::channel(2);
             let mut config = test_engine_config(context, 10, Arc::new(AtomicUsize::new(0)));
-            // TestDb's root, so completion's final check passes.
-            config.target.root = sha256::Digest::from([0u8; 32]);
             config.update_rx = Some(update_rx);
-            // Queue a stale update and an advancing one, then drive the engine
-            // one event at a time: the first update flows through handle_event,
-            // and a target already at its end stashes it (the hold) rather than
-            // resetting mid-round; completion only happens once no newer target
-            // is known or stashed.
+            // Queue a stale update and an advancing one. The stale one is discarded and
+            // the advancing one retargets the engine instead of completing.
             let stale = Target {
                 root: sha256::Digest::from([2u8; 32]),
                 range: non_empty_range!(Location::new(5), Location::new(10)),
@@ -1272,17 +1234,9 @@ mod tests {
             update_tx.send(advancing.clone()).await.unwrap();
 
             let engine = Engine::new(config).await.unwrap();
-            // Each step parks and takes one queued event: the stale update is
-            // discarded, then the advancing one retargets the parked engine.
-            let mut engine = engine;
-            for _ in 0..2 {
-                match engine.step().await.unwrap() {
-                    NextStep::Continue(next) => engine = next,
-                    NextStep::Complete(_) => {
-                        panic!("engine should park and take the queued updates first")
-                    }
-                }
-            }
+            let NextStep::Continue(engine) = engine.step().await.unwrap() else {
+                panic!("engine should retarget instead of completing");
+            };
             assert_eq!(engine.target, advancing);
         });
     }
