@@ -250,8 +250,9 @@ pub enum Response<F: Family, Op, D: Digest> {
     },
     /// The source pruned past the requested size and cannot answer.
     ///
-    /// `frontier` is the source's oldest retained position, so the requester can
-    /// measure how stale its target is instead of retrying blindly.
+    /// `frontier` is the source's claimed oldest retained position. This response
+    /// has no proof and says nothing about availability at other sources; it must
+    /// not permanently suppress retries or change the authenticated target.
     Pruned {
         /// Oldest journal position the source can still serve.
         frontier: Location<F>,
