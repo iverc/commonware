@@ -1,11 +1,13 @@
 iverc/commonware - a fork of commonwarexyz/monorepo
 Copyright (c) 2026 Commonware, Inc. All upstream code is dual MIT OR Apache-2.0.
 
-This fork modifies the following files. Upstream licensing and copyright are retained.
+Based on upstream commit ac773de47aa7834620607e70c18941d1c3844f49.
+Upstream licensing and copyright are retained. This fork modifies:
 
   storage/src/qmdb/sync/engine.rs
-      Preserves eligible sync work across target updates, holds near-complete
-      targets until reached, and retries source-local pruning hints.
+      Preserves eligible sync work across target updates, refreshes moved
+      boundaries, holds near-complete targets until reached, and retries
+      source-local pruning hints.
 
   storage/src/qmdb/sync/source.rs
       Adds the Response::Pruned wire variant and its codec.
@@ -15,3 +17,7 @@ This fork modifies the following files. Upstream licensing and copyright are ret
 
   glue/src/dkg/reshare/application.rs
       Retries pending epoch-info derivation during boundary verification.
+
+  storage/src/qmdb/keyless/sync/tests.rs
+      Verifies retained boundary responses and pinned nodes across target
+      updates and root eviction for MMR and MMB.
